@@ -1,0 +1,103 @@
+---
+title: "Analyze data before correction"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error=FALSE, warning=FALSE)
+require("knitr")
+```
+
+```{r packages, include=FALSE}
+# Required libraries
+library(tidyr)
+library(pheatmap)
+library(factoextra)
+library(plotly)
+library(ggplot2)
+```
+
+### Load data and prepared fpkm values
+
+```{r}
+datasets = as.data.frame(scan("Stanford_datasets.txt",list(setname="",seqBatch="",species="",tissue=""),sep="\t"))
+fpkmMat <- as.matrix(read.table('Stanford_datasets_fpkmMat.txt',header=FALSE,sep='\t'))
+```
+
+### Log transform data to normalize
+
+```{r}
+logTransformed_fpkmMat = log2(fpkmMat+1)
+colnames(logTransformed_fpkmMat) <- datasets$setname
+```
+
+### Plot correlation heatmaps using different methods
+
+```{r, echo=FALSE}
+pheatmap(cor(logTransformed_fpkmMat)) 
+pheatmap(cor(logTransformed_fpkmMat),clustering_method="average") 
+pheatmap(cor(logTransformed_fpkmMat),clustering_method="single")
+```
+
+### Apply PCA method to uncorrected data
+
+```{r}
+transposeLogTransformed_fpkmMat = t(logTransformed_fpkmMat)
+pca_proc <- prcomp(transposeLogTransformed_fpkmMat[,apply(transposeLogTransformed_fpkmMat, 2, var, na.rm=TRUE) != 0],scale=TRUE,center=TRUE)
+```
+
+### Check PCA statistics
+
+```{r}
+summary(pca_proc)
+```
+
+### Transfer PCA data to plots
+
+```{r}
+plotData = datasets[,c("setname","species","tissue")]
+plotData$PC1 <- pca_proc$x[,1]
+plotData$PC2 <- pca_proc$x[,2]
+plotData$PC3 <- pca_proc$x[,3]
+```
+
+### Plot the first and the second principal components 
+
+```{r, echo=FALSE}
+p_scores <- ggplot(plotData, aes(x = PC1, y = PC2, shape=tissue))+geom_point(aes(color=species))+scale_shape_manual(values=c("adipose"=0,"adrenal"=1,"brain"=2,"sigmoid"=3,"heart"=4,"kidney"=5,"liver"=6,"lung"=7,"ovary"=8,"pancreas"=9,"small_bowel"=10,"spleen"=11,"testis"=12))
+p_scores
+```
+
+### Plot the first and the second principal components with centroids
+
+```{r}
+plotData_pca <- prcomp(pca_proc$x[, -1])
+fviz_pca_ind(plotData_pca,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = plotData$species, # color by groups
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Species",
+             labs = "PCA before correction"
+             )
+```
+
+### Plot the first, the second and the third principal components
+
+```{r, echo=FALSE}
+fig <- plot_ly(data = plotData, x = ~PC1, y = ~PC2, z = ~PC3, color=~species,shape=~tissue)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'PC1'),
+                     yaxis = list(title = 'PC2'),
+                     zaxis = list(title = 'PC3')))
+fig
+```
+
+### Test for significance of correlations between the matched tissues PC values of human and mouse
+
+```{r}
+cor.test(plotData$PC1[1:13],plotData$PC1[14:26],method="pearson") 
+cor.test(plotData$PC2[1:13],plotData$PC2[14:26],method="pearson") 
+cor.test(plotData$PC3[1:13],plotData$PC3[14:26],method="pearson") 
+```

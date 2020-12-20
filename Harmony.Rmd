@@ -1,0 +1,148 @@
+---
+title: "Analyze data after Harmony correction"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error=FALSE, warning=FALSE)
+require("knitr")
+```
+
+```{r packages, include=FALSE}
+# Required libraries
+library(EDASeq)
+library(edgeR)
+library(sva)
+library(harmony)
+library(ggplot2)
+library(pheatmap)
+library(plotly)
+library(factoextra)
+```
+
+### Load data, prepared fpkm values and ortholog annonation
+
+```{r}
+datasets = as.data.frame(scan("Stanford_datasets.txt",list(setname="",seqBatch="",species="",tissue=""),sep="\t"))
+rawCounts <- as.matrix(read.table('Stanford_datasets_rawCountsMat.txt',header=FALSE,sep='\t'))
+geneDetails <- as.data.frame(scan("ortholog_GC_table.txt",skip=1,list(mouse_name="",mouse_GC = 0.0,human_name = "",human_GC=0.0)))
+```
+
+### Set columns names
+
+```{r}
+colnames(rawCounts) <- datasets$setname
+rownames(rawCounts) <- geneDetails$human_name 
+rownames(datasets) <- datasets$setname
+rownames(geneDetails) <- geneDetails$human_name 
+```
+
+### Filter out lower 30% and mitochondrial genes
+
+```{r}
+rowSums = apply(rawCounts,1,function(x) sum(x))
+quantile(rowSums,probs = 0.3) # result is 2947.9 
+filter <- apply(rawCounts,1,function(x) sum(x)>2947.9 )
+mt <- grep("mt-",geneDetails$mouse_name)
+filteredNames <- setdiff(rownames(rawCounts[filter,]),rownames(rawCounts[mt,])) 
+filteredRawCounts <- rawCounts[filteredNames,]
+```
+
+### Normalize data accounting for GC content
+
+```{r}
+GCnormCounts <- filteredRawCounts
+GCnormCounts[,1:13] <- withinLaneNormalization(filteredRawCounts[,1:13],geneDetails[filteredNames,"human_GC"],which="loess",round=TRUE)
+GCnormCounts[,14:26] <- withinLaneNormalization(filteredRawCounts[,14:26],geneDetails[filteredNames,"mouse_GC"],which="loess",round=TRUE)
+```
+
+### Depth normalize using TMM scaling factors
+
+```{r}
+origColSums <- apply(rawCounts,2,function(x) sum(x))
+normFactors <- calcNormFactors(GCnormCounts,method='TMM')
+colSums = apply(GCnormCounts,2,function(x) sum(x))
+normalizedColSums <- origColSums
+i <- 1
+while (i<length(colSums)){
+  normalizedColSums[i] <- origColSums[i]* normFactors[i]
+  i <- i+1
+}
+meanDepth <- mean(normalizedColSums)
+filteredDepthNormCounts <- GCnormCounts
+i <- 1
+while (i<ncol(filteredDepthNormCounts)){
+ filteredDepthNormCounts[,i] <- (GCnormCounts[,i]/normalizedColSums[i])*meanDepth
+ i <- i+1
+ }
+```
+
+### Normalize using log transforming 
+
+```{r}
+logTransformedDepthNormCounts <- log2(filteredDepthNormCounts+1)
+```
+
+### Apply Harmony method to correct batch effect
+
+```{r}
+harmonized_pcs <- HarmonyMatrix(
+  data_mat  = logTransformedDepthNormCounts,       
+  meta_data = meta,
+  vars_use  = "seqBatch",
+)
+plotData_pca <- prcomp(harmonized_pcs[, -1])
+```
+
+### Check PCA statistics
+
+```{r}
+summary(plotData_pca)
+```
+
+### Transfer PCA data to plots
+
+```{r}
+plotData = datasets[,c("setname","species","tissue")]
+plotData$PC1 <- harmonized_pcs[,1]
+plotData$PC2 <- harmonized_pcs[,2]
+plotData$PC3 <- harmonized_pcs[,3]
+```
+
+### Plot the first and the second principal components 
+
+```{r, echo=FALSE}
+qplot(PC1,PC2,data=plotData,color=species,shape=tissue,xlab="PC1 (21% variability)",ylab="PC2 (12% variability)")+scale_shape_manual(values=c("adipose"=0,"adrenal"=1,"brain"=2,"sigmoid"=3,"heart"=4,"kidney"=5,"liver"=6,"lung"=7,"ovary"=8,"pancreas"=9,"small_bowel"=10,"spleen"=11,"testis"=12))
+```
+
+### Plot the first and the second principal components with centroids
+
+```{r, echo=FALSE}
+fviz_pca_ind(plotData_pca,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = plotData$species, # color by groups
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Species"
+             )
+```
+
+### Plot the first, the second and the third principal components
+
+```{r, echo=FALSE}
+fig <- plot_ly(plotData, x = ~PC1, y = ~PC2, z = ~PC3, color=~species,shape=~tissue)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'PC1'),
+                     yaxis = list(title = 'PC2'),
+                     zaxis = list(title = 'PC3')))
+fig
+```
+
+### Test for significance of correlations between the matched tissues PC values of human and mouse
+
+```{r}
+cor.test(plotData$PC1[1:13],plotData$PC1[14:26],method="pearson") 
+cor.test(plotData$PC2[1:13],plotData$PC2[14:26],method="pearson")
+cor.test(plotData$PC3[1:13],plotData$PC3[14:26],method="pearson") 
+```
